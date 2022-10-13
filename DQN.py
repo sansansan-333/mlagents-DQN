@@ -3,6 +3,9 @@ from keras import models, layers
 import tensorflow as tf
 import numpy as np
 import random
+import datetime
+import os
+from statistics import mean
 
 from functionTimeMeasure import FunctionTimeMeasure
 
@@ -67,7 +70,8 @@ class DQN:
         gamma,
         start_steps,
         update_interval,
-        target_update_interval
+        target_update_interval,
+
     ):
         self.epsilon = epsilon
         self.gamma = gamma
@@ -75,27 +79,33 @@ class DQN:
         self.update_interval = update_interval
         self.target_update_interval = target_update_interval
 
+        self._step = 0 # step needs to be counted manually by trainer
         self.q_network: QNetwork = None
         self.target_q_network: QNetwork = None
 
+        # tensorboard
+        now = datetime.datetime.today().strftime('%Y-%m-%d--%H-%M-%S')
+        log_dir = os.path.dirname(__file__) + f"/log/"
+        self.train_writer = tf.summary.create_file_writer(log_dir)
 
-    def is_random(self, step) -> bool:
-        return step < self.start_steps or np.random.rand() < self.epsilon
 
-    def is_update(self, step) -> bool:
-        return step >= self.start_steps and step % self.update_interval == 0
+    def is_random(self) -> bool:
+        return self._step < self.start_steps or np.random.rand() < self.epsilon
 
-    def is_update_target(self, step) -> bool:
-        return step >= self.start_steps and step % self.target_update_interval == 0
+    def is_update(self) -> bool:
+        return self._step >= self.start_steps and self._step % self.update_interval == 0
+
+    def is_update_target(self) -> bool:
+        return self._step >= self.start_steps and self._step % self.target_update_interval == 0
+
+    def count_step(self):
+        self._step += 1
 
     def select_action(self, state: np.ndarray) -> np.ndarray:
-        ftm.start('select_action')
         action = self.q_network.model.predict_on_batch(np.array([state])) # predict_on_batch() is much faster than predict() if executed on single batch  
-        ftm.end('select_action')
         return action
 
     def update(self, batch: List[TimeStep]):
-        ftm.start('update')
         x_state = np.zeros((len(batch), *self.q_network.input_shape))
         y_target = np.zeros((len(batch), self.q_network.output_size))
         next_qs = self.target_q_network.model.predict(np.array([time_step.next_state for time_step in batch]))
@@ -103,29 +113,29 @@ class DQN:
             x_state[i] = batch[i].state
             y_target[i] = batch[i].reward + (1 - batch[i].done) * self.gamma * np.max(next_qs[i])
 
-        self.q_network.model.fit(
+        history = self.q_network.model.fit(
             x=x_state,
             y=y_target,
             batch_size=1,
             epochs=1,
-            verbose=0
+            verbose=1
         )
-        ftm.end('update')
+        
+        with self.train_writer.as_default():
+            tf.summary.scalar('loss', mean(history.history['loss']), step=self._step)
+            tf.summary.flush()
 
     def update_target(self):
-        ftm.start('update_target')
         self.target_q_network.model.set_weights(self.q_network.model.get_weights())
-        ftm.end('update_target')
 
     def set_q_networks(self, input_shape: Tuple, output_size: int):
-        ftm.start('set_q_network')
         self.q_network = QNetwork(input_shape, output_size)
         self.target_q_network = QNetwork(input_shape, output_size)
         self.q_network.compile(loss=self._get_custom_loss())
         self.target_q_network.compile(loss=self._get_custom_loss())
-        ftm.end('set_q_network')
 
     def _get_custom_loss(self):
         def loss(y_target, y_current_q):
-            return 0.5 * tf.math.pow(y_target - y_current_q, 2)
+            l = 0.5 * tf.math.pow(y_target - y_current_q, 2)
+            return l
         return loss

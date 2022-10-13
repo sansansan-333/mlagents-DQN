@@ -3,8 +3,10 @@ from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.base_env import ActionTuple
 from copy import copy
 import numpy as np
+import os
 import random
 import logging
+import datetime
 
 from DQN import DQN, QNetwork, ReplayBuffer, TimeStep, ftm
 
@@ -33,9 +35,9 @@ class DQNTrainer:
         self.time_step: TimeStep = TimeStep(state_size=self.state_size, action_size=self.action_size) 
 
         # debug
-        self._logger = logging.getLogger('log_DQNTrainer')
+        self._logger = logging.getLogger('DQNTrainer')
         self._logger.setLevel(logging.DEBUG)
-        self._logger.addHandler(logging.FileHandler(filename='log_DQNTrainer.log'))
+        self._logger.addHandler(logging.FileHandler(filename='DQNTrainer.log'))
 
     def start_learning(self):
         try:
@@ -50,7 +52,7 @@ class DQNTrainer:
 
     def _advance(self):
         # choose action
-        if self.dqn.is_random(self.step):
+        if self.dqn.is_random():
             action = self._get_random_action()
         else:
             action = self.dqn.select_action(self.prev_time_step.state)
@@ -61,7 +63,7 @@ class DQNTrainer:
                 1, # assume there's only one agent waiting
                 self.env.behavior_specs[self.behavior_name].action_spec.continuous_size
             ),
-            dtype=np.int32
+            dtype=np.float32
         )
         action_array[0] = action
         if self.is_agent_waiting:
@@ -71,6 +73,7 @@ class DQNTrainer:
         ftm.start('env.step')
         self.env.step()
         self.step += 1
+        self.dqn.count_step()
         ftm.end('env.step')
 
         # observe game state and store it
@@ -103,12 +106,12 @@ class DQNTrainer:
         self.prev_time_step = copy(self.time_step)
 
         # update Q network
-        if self.dqn.is_update(self.step):
+        if self.dqn.is_update():
             batch = self.buffer.sample(self.batch_size)
             self.dqn.update(batch)
 
         # update target Q network
-        if self.dqn.is_update_target(self.step):
+        if self.dqn.is_update_target():
             self.dqn.update_target()
 
     def _get_random_action(self) -> np.ndarray:
@@ -118,30 +121,34 @@ class DQNTrainer:
         return action
 
     def _save_model(self):
-        pass
+        now = datetime.datetime.today().strftime('%Y-%m-%d--%H-%M-%S')
+        dir = os.path.dirname(__file__) + f"/model/{now}"
+        os.makedirs(dir)
+        self.dqn.q_network.model.save(dir)
 
 
 def main():
     env = UnityEnvironment()
     dqn = DQN(
-        epsilon=0.1,
+        epsilon=0.01,
         gamma=0.99,
-        start_steps=10,
+        start_steps=100000,
         update_interval=4,
-        target_update_interval=10
+        target_update_interval=1000
     )
-    MAX_STEPS = 10000
+    MAX_STEPS = 1000000000
     BATCH_SIZE = 32
-    BUFFER_SIZE = 10000
+    BUFFER_SIZE = 100000
     trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE)
 
     # TODO: wait until game begins
     # while ...
-    
+
     try:
         trainer.start_learning()
     finally:
         env.close()
+    
     
     
 if __name__ == "__main__":
