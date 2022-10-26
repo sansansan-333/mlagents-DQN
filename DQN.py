@@ -84,8 +84,8 @@ class DQN:
         self.target_q_network: QNetwork = None
 
         # tensorboard
-        now = datetime.datetime.today().strftime('%Y-%m-%d--%H-%M-%S')
-        log_dir = os.path.dirname(__file__) + f"/log/"
+        now = datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')
+        log_dir = os.path.dirname(__file__) + f"/results/"
         self.train_writer = tf.summary.create_file_writer(log_dir)
 
 
@@ -120,10 +120,6 @@ class DQN:
             epochs=1,
             verbose=1
         )
-        
-        with self.train_writer.as_default():
-            tf.summary.scalar('loss', mean(history.history['loss']), step=self._step)
-            tf.summary.flush()
 
     def update_target(self):
         self.target_q_network.model.set_weights(self.q_network.model.get_weights())

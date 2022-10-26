@@ -3,16 +3,19 @@ from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.base_env import ActionTuple
 from copy import copy
 import numpy as np
+import tensorflow as tf
 import os
 import random
 import logging
 import datetime
+import pickle
 
 from DQN import DQN, QNetwork, ReplayBuffer, TimeStep, ftm
+from DQNProgress import DQNProgress
 
 # This class is dependent on the UFE environment
 class DQNTrainer: 
-    def __init__(self, env: UnityEnvironment, dqn: DQN, max_steps: int, batch_size: int, buffer_size: int):
+    def __init__(self, env: UnityEnvironment, dqn: DQN, max_steps: int, batch_size: int, buffer_size: int, save_progress_freq: int):
         # parameters
         self.max_steps = max_steps
         self.batch_size = batch_size
@@ -33,13 +36,20 @@ class DQNTrainer:
         self.buffer = ReplayBuffer(buffer_size)
         self.prev_time_step: TimeStep = TimeStep(state_size=self.state_size, action_size=self.action_size) 
         self.time_step: TimeStep = TimeStep(state_size=self.state_size, action_size=self.action_size) 
+        self.save_progress_freq = save_progress_freq
+
+        # tensorboard
+        self.acc_reward = 0
 
         # debug
         self._logger = logging.getLogger('DQNTrainer')
         self._logger.setLevel(logging.DEBUG)
         self._logger.addHandler(logging.FileHandler(filename='DQNTrainer.log'))
 
-    def start_learning(self):
+    def start_learning(self, progress_file_path=None):
+        if progress_file_path != None:
+            self._resume(progress_file_path)
+
         try:
             while not self._done_training():
                 self._advance()
@@ -89,6 +99,7 @@ class DQNTrainer:
             self.time_step.done = 0
             
             self.is_agent_waiting = True
+            self.acc_reward += self.time_step.reward
         
         if len(terminal_steps) == 1:
             agent_id = terminal_steps.agent_id[0]
@@ -100,9 +111,12 @@ class DQNTrainer:
             self.time_step.done = 1
 
             self.is_agent_waiting = False
+            with self.dqn.train_writer.as_default():
+                tf.summary.scalar('accumulated reward', self.acc_reward, step=self.step)
+                tf.summary.flush()
+            self.acc_reward = 0
         
         self.buffer.append(self.prev_time_step)
-        # self._logger.debug(self.prev_time_step)
         self.prev_time_step = copy(self.time_step)
 
         # update Q network
@@ -114,16 +128,38 @@ class DQNTrainer:
         if self.dqn.is_update_target():
             self.dqn.update_target()
 
+        # save progress
+        if self.step % self.save_progress_freq == 0 and self.step != 0:
+            DQNProgress.discard_files()
+            progress = DQNProgress(
+                model_weights=self.dqn.q_network.model.get_weights(),
+                target_model_weights=self.dqn.target_q_network.model.get_weights(),
+                step=self.step,
+                replay_buffer=self.buffer
+            )
+            progress.save()
+            self._save_model(dir=os.path.join(DQNProgress.dir, f"{datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')}_step={self.step}"))
+
+
+    def _resume(self, progress_file_path):
+        with open(progress_file_path, 'rb') as f:
+            progress: DQNProgress = pickle.load(f)
+            self.dqn.q_network.model.set_weights(progress.model_weights)
+            self.dqn.target_q_network.model.set_weights(progress.target_model_weights)
+            self.step = progress.step
+            self.buffer = progress.replay_buffer
+
     def _get_random_action(self) -> np.ndarray:
         action = np.empty(self.action_size)
         for i in range(self.action_size):
             action[i] = random.random()
         return action
 
-    def _save_model(self):
-        now = datetime.datetime.today().strftime('%Y-%m-%d--%H-%M-%S')
-        dir = os.path.dirname(__file__) + f"/model/{now}"
-        os.makedirs(dir)
+    def _save_model(self, dir=None):
+        now = datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')
+        if dir == None:
+            dir = os.path.dirname(__file__) + f"/model/{now}"
+        os.makedirs(dir, exist_ok=True)
         self.dqn.q_network.model.save(dir)
 
 
@@ -139,7 +175,7 @@ def main():
     MAX_STEPS = 1000000000
     BATCH_SIZE = 32
     BUFFER_SIZE = 100000
-    trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE)
+    trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE, save_progress_freq=MAX_STEPS/100)
 
     # TODO: wait until game begins
     # while ...
