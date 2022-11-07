@@ -19,10 +19,9 @@ class DQNProgress:
             pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
 
     @staticmethod
-    def discard_files():
+    def discard_progress_files():
         '''
         Discard files containing progress info.
-        Discard all files in the progress directory if 'all' is true.
         '''
         os.makedirs(DQNProgress.dir, exist_ok=True)
         for file in os.listdir(DQNProgress.dir):

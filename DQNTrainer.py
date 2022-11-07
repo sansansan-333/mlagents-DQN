@@ -130,7 +130,7 @@ class DQNTrainer:
 
         # save progress
         if self.step % self.save_progress_freq == 0 and self.step != 0:
-            DQNProgress.discard_files()
+            DQNProgress.discard_progress_files()
             progress = DQNProgress(
                 model_weights=self.dqn.q_network.model.get_weights(),
                 target_model_weights=self.dqn.target_q_network.model.get_weights(),
@@ -168,7 +168,7 @@ def main():
     dqn = DQN(
         epsilon=0.01,
         gamma=0.99,
-        start_steps=100000,
+        start_steps=100,
         update_interval=4,
         target_update_interval=1000
     )
