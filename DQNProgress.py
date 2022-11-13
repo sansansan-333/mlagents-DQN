@@ -14,9 +14,11 @@ class DQNProgress:
 
     def save(self):
         now = datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')
-        file_name = now + f'_step={self.step}'
-        with open(f'{DQNProgress.dir}/{file_name}.pickle', 'wb') as f:
+        file_name = now + f'_step={self.step}.pickle'
+        with open(os.path.join(DQNProgress.dir, file_name), 'wb') as f:
             pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
+
+        print("save")
 
     @staticmethod
     def discard_progress_files():

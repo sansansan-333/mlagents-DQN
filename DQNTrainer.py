@@ -44,7 +44,8 @@ class DQNTrainer:
         # debug
         self._logger = logging.getLogger('DQNTrainer')
         self._logger.setLevel(logging.DEBUG)
-        self._logger.addHandler(logging.FileHandler(filename='DQNTrainer.log'))
+        file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'log', 'DQNTrainer.log')
+        self._logger.addHandler(logging.FileHandler(filename=file))
 
     def start_learning(self, progress_file_path=None):
         if progress_file_path != None:
@@ -54,7 +55,7 @@ class DQNTrainer:
             while not self._done_training():
                 self._advance()
         finally:
-            ftm.print()
+            self._save_progress()
             self._save_model()
 
     def _done_training(self) -> bool:
@@ -63,7 +64,7 @@ class DQNTrainer:
     def _advance(self):
         # choose action
         if self.dqn.is_random():
-            action = self._get_random_action()
+            action = self.dqn.get_random_action()
         else:
             action = self.dqn.select_action(self.prev_time_step.state)
 
@@ -80,11 +81,10 @@ class DQNTrainer:
             self.env.set_actions(behavior_name=self.behavior_name, action=ActionTuple(continuous=action_array))
 
         # step environment
-        ftm.start('env.step')
         self.env.step()
         self.step += 1
+        print(self.step)
         self.dqn.count_step()
-        ftm.end('env.step')
 
         # observe game state and store it
         (decision_steps, terminal_steps) = self.env.get_steps(behavior_name=self.behavior_name)
@@ -109,6 +109,7 @@ class DQNTrainer:
             self.time_step.action = action
             self.time_step.reward = terminal_steps[agent_id].reward
             self.time_step.done = 1
+            self._logger.debug(self.time_step)
 
             self.is_agent_waiting = False
             with self.dqn.train_writer.as_default():
@@ -130,14 +131,7 @@ class DQNTrainer:
 
         # save progress
         if self.step % self.save_progress_freq == 0 and self.step != 0:
-            DQNProgress.discard_progress_files()
-            progress = DQNProgress(
-                model_weights=self.dqn.q_network.model.get_weights(),
-                target_model_weights=self.dqn.target_q_network.model.get_weights(),
-                step=self.step,
-                replay_buffer=self.buffer
-            )
-            progress.save()
+            self._save_progress()
             self._save_model(dir=os.path.join(DQNProgress.dir, f"{datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')}_step={self.step}"))
 
 
@@ -148,17 +142,21 @@ class DQNTrainer:
             self.dqn.target_q_network.model.set_weights(progress.target_model_weights)
             self.step = progress.step
             self.buffer = progress.replay_buffer
+            self.dqn._step = progress.step
 
-    def _get_random_action(self) -> np.ndarray:
-        action = np.empty(self.action_size)
-        for i in range(self.action_size):
-            action[i] = random.random()
-        return action
+    def _save_progress(self): 
+        progress = DQNProgress(
+            model_weights=self.dqn.q_network.model.get_weights(),
+            target_model_weights=self.dqn.target_q_network.model.get_weights(),
+            step=self.step,
+            replay_buffer=self.buffer
+        )
+        progress.save()
 
     def _save_model(self, dir=None):
         now = datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')
         if dir == None:
-            dir = os.path.dirname(__file__) + f"/model/{now}"
+            dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model", now)
         os.makedirs(dir, exist_ok=True)
         self.dqn.q_network.model.save(dir)
 
@@ -166,16 +164,17 @@ class DQNTrainer:
 def main():
     env = UnityEnvironment()
     dqn = DQN(
-        epsilon=0.01,
-        gamma=0.99,
-        start_steps=100,
+        epsilon=0.05,
+        gamma=0.999,
+        start_steps=100000,
         update_interval=4,
-        target_update_interval=1000
+        target_update_interval=10000,
+        delta_output_range=0.001
     )
     MAX_STEPS = 1000000000
-    BATCH_SIZE = 32
+    BATCH_SIZE = 64
     BUFFER_SIZE = 100000
-    trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE, save_progress_freq=MAX_STEPS/100)
+    trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE, save_progress_freq=100000)
 
     # TODO: wait until game begins
     # while ...

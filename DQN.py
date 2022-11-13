@@ -57,7 +57,7 @@ class QNetwork:
         self.model = models.Sequential([
             layers.Dense(units=16, activation='relu', input_shape=input_shape),
             layers.Dense(units=8, activation='relu'),
-            layers.Dense(units=output_size, activation='sigmoid')
+            layers.Dense(units=output_size, activation='linear')
         ])
 
     def compile(self, loss):
@@ -71,6 +71,7 @@ class DQN:
         start_steps,
         update_interval,
         target_update_interval,
+        delta_output_range,
 
     ):
         self.epsilon = epsilon
@@ -78,15 +79,16 @@ class DQN:
         self.start_steps = start_steps
         self.update_interval = update_interval
         self.target_update_interval = target_update_interval
+        self.delta_output_range = delta_output_range
 
-        self._step = 0 # step needs to be counted manually by trainer
+        self._step = 0 # step needs to be counted manually by calling count_step()
         self.q_network: QNetwork = None
         self.target_q_network: QNetwork = None
 
+
         # tensorboard
-        now = datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')
-        log_dir = os.path.dirname(__file__) + f"/results/"
-        self.train_writer = tf.summary.create_file_writer(log_dir)
+        dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+        self.train_writer = tf.summary.create_file_writer(dir)
 
 
     def is_random(self) -> bool:
@@ -102,8 +104,33 @@ class DQN:
         self._step += 1
 
     def select_action(self, state: np.ndarray) -> np.ndarray:
-        action = self.q_network.model.predict_on_batch(np.array([state])) # predict_on_batch() is much faster than predict() if executed on single batch  
-        return action
+        q_values: np.ndarray = self.q_network.model.predict_on_batch(np.array([state]))[0] # predict_on_batch() is much faster than predict() if executed on single batch 
+
+        print(q_values)
+        q_max = np.max(q_values)
+        if q_values[0] == q_max:
+            action = [0 for _ in range(self.q_network.output_size)]
+            action[0] = 1
+            return np.asarray(action)
+        else: 
+            action = [1 if q >= q_max - self.delta_output_range else 0  for q in q_values]
+            action[0] = 0
+            return np.asarray(action)
+    
+    def get_random_action(self) -> np.ndarray:
+        size = self.q_network.output_size
+        rand = np.random.rand(size)
+
+        rand_max = np.max(rand)
+        if rand[0] == rand_max:
+            action = [0 for _ in range(size)]
+            action[0] = 1
+            return np.asarray(action)
+        else:
+            action = [1 if r >= rand_max - self.delta_output_range else 0   for r in rand]
+            action[0] = 0
+            return np.asarray(action)
+
 
     def update(self, batch: List[TimeStep]):
         x_state = np.zeros((len(batch), *self.q_network.input_shape))
