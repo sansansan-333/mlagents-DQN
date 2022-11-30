@@ -18,8 +18,6 @@ class DQNProgress:
         with open(os.path.join(DQNProgress.dir, file_name), 'wb') as f:
             pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
 
-        print("save")
-
     @staticmethod
     def discard_progress_files():
         '''

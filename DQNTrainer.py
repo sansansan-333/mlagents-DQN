@@ -47,9 +47,9 @@ class DQNTrainer:
         file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'log', 'DQNTrainer.log')
         self._logger.addHandler(logging.FileHandler(filename=file))
 
-    def start_learning(self, progress_file_path=None):
-        if progress_file_path != None:
-            self._resume(progress_file_path)
+    def start_learning(self, progress_path: str = None):
+        if progress_path != None:
+            self._resume(progress_path)
 
         try:
             while not self._done_training():
@@ -57,6 +57,7 @@ class DQNTrainer:
         finally:
             self._save_progress()
             self._save_model()
+            ftm.print()
 
     def _done_training(self) -> bool:
         return self.step > self.max_steps
@@ -169,10 +170,10 @@ def main():
         start_steps=100000,
         update_interval=4,
         target_update_interval=10000,
-        delta_output_range=0.001
+        demonstrations_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'demonstrations')
     )
     MAX_STEPS = 1000000000
-    BATCH_SIZE = 64
+    BATCH_SIZE = 16
     BUFFER_SIZE = 100000
     trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE, save_progress_freq=100000)
 
