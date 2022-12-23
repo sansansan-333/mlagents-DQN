@@ -6,10 +6,11 @@ import os
 class DQNProgress:
     dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'progress')
 
-    def __init__(self, model_weights, target_model_weights, step: int, replay_buffer: ReplayBuffer):
+    def __init__(self, model_weights, target_model_weights, replay_buffer: ReplayBuffer, step: int, episode: int):
         self.model_weights = model_weights
         self.target_model_weights = target_model_weights
         self.step = step
+        self.episode = episode
         self.replay_buffer = replay_buffer
 
     def save(self):

@@ -27,7 +27,7 @@ class DQNTrainer:
         self.behavior_name = list(env.behavior_specs.keys())[0] # assume there's only one behavior
         self.state_size = env.behavior_specs[self.behavior_name].observation_specs[0].shape[0] # assume there's only one observation and the observation is one-dimentional
         self.action_size = env.behavior_specs[self.behavior_name].action_spec.continuous_size # assume only continuous action is used
-        self.is_agent_waiting = False
+        self.is_agent_waiting = True
 
         # training
         self.dqn = dqn
@@ -40,6 +40,9 @@ class DQNTrainer:
 
         # tensorboard
         self.acc_reward = 0
+        self.random_action_count = 0
+        self.chosen_action_count = 0
+        self.episode = 0
 
         # debug
         self._logger = logging.getLogger('DQNTrainer')
@@ -66,10 +69,12 @@ class DQNTrainer:
         # choose action
         if self.dqn.is_random():
             action = self.dqn.get_random_action()
+            self.random_action_count += 1
         else:
-            action = self.dqn.select_action(self.prev_time_step.state)
+            action = self.dqn.get_action(self.prev_time_step.state)
+            self.chosen_action_count += 1
 
-        # send action to agent in unity
+        # send action to agent in Unity
         action_array = np.empty(
             (
                 1, # assume there's only one agent waiting
@@ -100,6 +105,7 @@ class DQNTrainer:
             self.time_step.done = 0
             
             self.is_agent_waiting = True
+
             self.acc_reward += self.time_step.reward
         
         if len(terminal_steps) == 1:
@@ -110,11 +116,18 @@ class DQNTrainer:
             self.time_step.action = action
             self.time_step.reward = terminal_steps[agent_id].reward
             self.time_step.done = 1
-            self._logger.debug(self.time_step)
 
             self.is_agent_waiting = False
+
+            self.acc_reward += self.time_step.reward
+            self.episode += 1
+            self._logger.debug(self.time_step)
+
+            # TensorBoard
             with self.dqn.train_writer.as_default():
                 tf.summary.scalar('accumulated reward', self.acc_reward, step=self.step)
+                tf.summary.scalar('randomness', self.random_action_count / (self.random_action_count + self.chosen_action_count), step=self.step)
+                tf.summary.scalar('episode', self.episode, step=self.step)
                 tf.summary.flush()
             self.acc_reward = 0
         
@@ -141,16 +154,18 @@ class DQNTrainer:
             progress: DQNProgress = pickle.load(f)
             self.dqn.q_network.model.set_weights(progress.model_weights)
             self.dqn.target_q_network.model.set_weights(progress.target_model_weights)
-            self.step = progress.step
             self.buffer = progress.replay_buffer
+            self.step = progress.step
             self.dqn._step = progress.step
+            self.episode = progress.episode
 
     def _save_progress(self): 
         progress = DQNProgress(
             model_weights=self.dqn.q_network.model.get_weights(),
             target_model_weights=self.dqn.target_q_network.model.get_weights(),
+            replay_buffer=self.buffer,
             step=self.step,
-            replay_buffer=self.buffer
+            episode=self.episode
         )
         progress.save()
 
@@ -165,20 +180,20 @@ class DQNTrainer:
 def main():
     env = UnityEnvironment()
     dqn = DQN(
-        epsilon=0.05,
+        learning_rate=0.00025,
+        initial_epsilon=1,
+        final_epsilon=0.1,
+        epsilon_decay=1e-3,
         gamma=0.999,
-        start_steps=100000,
+        start_steps=1000,
         update_interval=4,
-        target_update_interval=10000,
-        demonstrations_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'demonstrations')
+        target_update_interval=1000,
+        # demonstrations_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'demonstrations')
     )
     MAX_STEPS = 1000000000
-    BATCH_SIZE = 16
-    BUFFER_SIZE = 100000
-    trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE, save_progress_freq=100000)
-
-    # TODO: wait until game begins
-    # while ...
+    BATCH_SIZE = 32
+    BUFFER_SIZE = 1000
+    trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE, save_progress_freq=1000)
 
     try:
         trainer.start_learning()

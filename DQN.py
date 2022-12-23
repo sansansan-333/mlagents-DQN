@@ -31,6 +31,9 @@ class ReplayBuffer:
         self.size = size
         self.buffer = []
         self._p = 0
+
+    def __len__(self) -> int:
+        return len(self.buffer)
     
     def append(self, time_step: TimeStep):
         if self.size == 0:
@@ -53,25 +56,31 @@ class QNetwork:
         self.input_shape = input_shape
         self.output_size = output_size
         self.model = models.Sequential([
-            layers.Dense(units=16, activation='relu', input_shape=input_shape),
-            layers.Dense(units=8, activation='relu'),
+            layers.Dense(units=128, activation='relu', input_shape=input_shape),
+            layers.Dense(units=128, activation='relu'),
             layers.Dense(units=output_size, activation='linear')
         ])
 
-    def compile(self, loss):
-        self.model.compile(optimizer='adam', loss=loss)
+    def compile(self, learning_rate, loss):
+        self.model.compile(optimizer=tf.keras.optimizers.RMSprop(learning_rate=learning_rate), loss=loss)
 
 class DQN:
     def __init__(
         self,
-        epsilon: float,
+        learning_rate: float,
+        initial_epsilon: float,
+        final_epsilon: float,
+        epsilon_decay: float,
         gamma: float,
         start_steps: int,
         update_interval: int,
         target_update_interval: int,
         demonstrations_path: str = None
     ):
-        self.epsilon = epsilon
+        self.learning_rate = learning_rate
+        self.initial_epsilon = initial_epsilon
+        self.epsilon_decay = epsilon_decay
+        self.final_epsilon = final_epsilon
         self.gamma = gamma
         self.start_steps = start_steps
         self.update_interval = update_interval
@@ -94,7 +103,7 @@ class DQN:
 
 
     def is_random(self) -> bool:
-        return self._step < self.start_steps or np.random.rand() < self.epsilon
+        return self._step < self.start_steps or np.random.rand() < max(self.initial_epsilon - self.epsilon_decay * (self._step - self.start_steps), self.final_epsilon)
 
     def is_update(self) -> bool:
         return self._step >= self.start_steps and self._step % self.update_interval == 0
@@ -105,7 +114,7 @@ class DQN:
     def count_step(self):
         self._step += 1
 
-    def select_action(self, state: np.ndarray) -> np.ndarray:
+    def get_action(self, state: np.ndarray) -> np.ndarray:
         q_values: np.ndarray = self.q_network.model.predict_on_batch(np.array([state]))[0] # predict_on_batch() is much faster than predict() if executed on single batch 
 
         action = np.zeros((self.q_network.output_size))
@@ -127,7 +136,7 @@ class DQN:
         x_state = np.zeros((len(batch), *self.q_network.input_shape))
         y_target = np.zeros((len(batch), self.q_network.output_size))
         next_qs = self.target_q_network.model.predict(np.array([time_step.next_state for time_step in batch]))
-        current_qs = self.q_network.model.predict(np.array([time_step.next_state for time_step in batch]))
+        current_qs = self.q_network.model.predict(np.array([time_step.state for time_step in batch]))
         for i in range(len(batch)):
             x_state[i] = batch[i].state
             if self.reward_shaping:
@@ -137,19 +146,24 @@ class DQN:
 
             # モデルを更新するとき、その時間ステップで行った行動a_tに対応するモデルの出力のみを更新する
             # なので誤差は[0, 0, 0.2, 0, 0, ...] のように一か所だけが０以外になる
-            y_target[i] = (batch[i].reward + additional_reward + (1 - batch[i].done) * self.gamma * np.max(next_qs[i])) * batch[i].action    +    current_qs[i] * (1 - batch[i].action)
+            y_target[i] = (batch[i].reward + additional_reward + (1 - batch[i].done) * self.gamma * np.max(next_qs[i])) * batch[i].action    + current_qs[i] * (1 - batch[i].action)
         ftm.end("update 1")
         print(current_qs[0])
         
         ftm.start("update 2")
-        self.q_network.model.fit(
+        history = self.q_network.model.fit(
             x=x_state,
             y=y_target,
-            batch_size=1,
+            batch_size=len(batch),
             epochs=1,
             verbose=1
         )
         ftm.end("update 2")
+
+        with self.train_writer.as_default():
+            history_dict = history.history
+            tf.summary.scalar('loss', history_dict['loss'][0], step=self._step)
+            tf.summary.flush()
 
 
     def update_target(self):
@@ -158,13 +172,19 @@ class DQN:
     def set_q_networks(self, input_shape: Tuple, output_size: int):
         self.q_network = QNetwork(input_shape, output_size)
         self.target_q_network = QNetwork(input_shape, output_size)
-        self.q_network.compile(loss=self._get_custom_loss())
-        self.target_q_network.compile(loss=self._get_custom_loss())
+        self.q_network.compile(self.learning_rate, loss=self._get_custom_loss())
+        self.target_q_network.compile(self.learning_rate, loss=self._get_custom_loss())
 
     def _get_custom_loss(self):
         def loss(y_target: tf.Tensor, y_current_q: tf.Tensor):
-            l = 0.5 * tf.math.pow(y_target - y_current_q, 2)
-            return l
+            # l = 0.5 * tf.math.pow(y_target - y_current_q, 2)
+            # error clip
+            # https://elix-tech.github.io/ja/2016/06/29/dqn-ja.html
+            error = tf.abs(y_target - y_current_q)
+            quadratic_part = tf.clip_by_value(error, 0, 1)
+            linear_part = error - quadratic_part
+            loss = tf.reduce_sum(0.5 * tf.square(quadratic_part) + linear_part)
+            return loss
 
         return loss
 
@@ -188,11 +208,12 @@ class DQN:
     
     def _load_demonstrations(self, path: str):
         '''
-        Load demonstrations files and store into a list of TimeStep.
+        Load demonstrations files and store them into a list of TimeStep.
         Note that the focused player is set "player 1". You may need to change it depending on your recordings.
         '''
         demonstrations = []
         focused_player = 1
+        frames_key = 'frames'
         state_key = f'p{focused_player}StateVector'
         action_key = f'p{focused_player}ActionVector'
 
@@ -200,12 +221,12 @@ class DQN:
             file = open(file_name)
             demo_json = json.load(file)
 
-            state_size = len(demo_json['frames'][0][state_key])
-            action_size = len(demo_json['frames'][0][action_key])
-            for i in range(len(demo_json['frames']) - 1):
+            state_size = len(demo_json[frames_key][0][state_key])
+            action_size = len(demo_json[frames_key][0][action_key])
+            for i in range(len(demo_json[frames_key]) - 1):
                 # TODO: ignore unnecessary frames
-                current_frame = demo_json['frames'][i]
-                next_frame = demo_json['frames'][i+1]
+                current_frame = demo_json[frames_key][i]
+                next_frame = demo_json[frames_key][i+1]
                 d = TimeStep(state_size, action_size)
                 d.state = np.asarray(current_frame[state_key])
                 d.action = np.asarray(current_frame[action_key])
@@ -214,17 +235,3 @@ class DQN:
                 demonstrations.append(d)
         
         return demonstrations
-    
-dqn = DQN(
-        epsilon=0.05,
-        gamma=0.999,
-        start_steps=100000,
-        update_interval=4,
-        target_update_interval=10000,
-        demonstrations_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'demonstrations')
-    )
-print("constractor finished")
-
-state = [1, 0, 0, 0, 0, 0, 0, 0, 0.2510966, -1]
-action = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-print(dqn._calc_similarity_to_demonstrations(state, action))
