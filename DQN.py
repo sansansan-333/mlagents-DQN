@@ -52,12 +52,11 @@ class ReplayBuffer:
         return sample
 
 class QNetwork:
-    def __init__(self, input_shape: Tuple, output_size: int):
+    def __init__(self, input_shape: Tuple, output_size: int, hidden_layer_unit: int):
         self.input_shape = input_shape
         self.output_size = output_size
         self.model = models.Sequential([
-            layers.Dense(units=128, activation='relu', input_shape=input_shape),
-            layers.Dense(units=128, activation='relu'),
+            layers.Dense(units=hidden_layer_unit, activation='relu', input_shape=input_shape),
             layers.Dense(units=output_size, activation='linear')
         ])
 
@@ -68,6 +67,7 @@ class DQN:
     def __init__(
         self,
         learning_rate: float,
+        hidden_layer_unit: int,
         initial_epsilon: float,
         final_epsilon: float,
         epsilon_decay: float,
@@ -78,6 +78,7 @@ class DQN:
         demonstrations_path: str = None
     ):
         self.learning_rate = learning_rate
+        self.hidden_layer_unit = hidden_layer_unit
         self.initial_epsilon = initial_epsilon
         self.epsilon_decay = epsilon_decay
         self.final_epsilon = final_epsilon

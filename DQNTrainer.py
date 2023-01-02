@@ -181,19 +181,20 @@ def main():
     env = UnityEnvironment()
     dqn = DQN(
         learning_rate=0.00025,
+        hidden_layer_unit=34,
         initial_epsilon=1,
         final_epsilon=0.1,
         epsilon_decay=1e-3,
         gamma=0.999,
-        start_steps=1000,
+        start_steps=10000,
         update_interval=4,
-        target_update_interval=1000,
+        target_update_interval=10000,
         # demonstrations_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'demonstrations')
     )
     MAX_STEPS = 1000000000
     BATCH_SIZE = 32
-    BUFFER_SIZE = 1000
-    trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE, save_progress_freq=1000)
+    BUFFER_SIZE = 10000
+    trainer = DQNTrainer(env, dqn, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE, save_progress_freq=10000)
 
     try:
         trainer.start_learning()
