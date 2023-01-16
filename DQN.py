@@ -75,7 +75,9 @@ class DQN:
         start_steps: int,
         update_interval: int,
         target_update_interval: int,
-        demonstrations_path: str = None
+        reward_shaping: bool,
+        demonstrations_path: str = None,
+        min_similarity: int = None
     ):
         self.learning_rate = learning_rate
         self.hidden_layer_unit = hidden_layer_unit
@@ -96,11 +98,12 @@ class DQN:
         self.train_writer = tf.summary.create_file_writer(dir)
 
         # reward shaping
-        if demonstrations_path == None:
-            self.reward_shaping = False
-        else:
+        self.reward_shaping = reward_shaping
+        self.min_similarity = min_similarity
+        self.action_histogram_in_demonstrations = None
+        if demonstrations_path != None:
+            # make the action histogram inside of this function
             self.demonstrations: List[TimeStep] = self._load_demonstrations(demonstrations_path)
-            self.reward_shaping = len(self.demonstrations) > 0
 
 
     def is_random(self) -> bool:
@@ -118,9 +121,24 @@ class DQN:
     def get_action(self, state: np.ndarray) -> np.ndarray:
         q_values: np.ndarray = self.q_network.model.predict_on_batch(np.array([state]))[0] # predict_on_batch() is much faster than predict() if executed on single batch 
 
-        action = np.zeros((self.q_network.output_size))
-        action[q_values.argmax()] = 1
-        return action
+        if self.reward_shaping:
+            # find an action that has the highest q value and required similarity to demonstrations
+            sorted_q_values_ind = q_values.argsort()[::-1]
+            for i in sorted_q_values_ind:
+                action_sample = np.zeros((self.q_network.output_size))
+                action_sample[i] = 1
+                similarity = self._calc_similarity_to_demonstrations(state, action_sample)
+                if similarity >= self.min_similarity:
+                    return action_sample
+
+            # if all actions' similarity are lower than minimum, just use max q value action
+            action = np.zeros((self.q_network.output_size))
+            action[sorted_q_values_ind[0]] = 1
+            return action
+        else:
+            action = np.zeros((self.q_network.output_size))
+            action[q_values.argmax()] = 1
+            return action
         
     
     def get_random_action(self) -> np.ndarray:
@@ -163,7 +181,7 @@ class DQN:
 
         with self.train_writer.as_default():
             history_dict = history.history
-            tf.summary.scalar('loss', history_dict['loss'][0], step=self._step)
+            tf.summary.scalar('training/loss', history_dict['loss'][0], step=self._step)
             tf.summary.flush()
 
 
@@ -171,8 +189,8 @@ class DQN:
         self.target_q_network.model.set_weights(self.q_network.model.get_weights())
 
     def set_q_networks(self, input_shape: Tuple, output_size: int):
-        self.q_network = QNetwork(input_shape, output_size)
-        self.target_q_network = QNetwork(input_shape, output_size)
+        self.q_network = QNetwork(input_shape, output_size, self.hidden_layer_unit)
+        self.target_q_network = QNetwork(input_shape, output_size, self.hidden_layer_unit)
         self.q_network.compile(self.learning_rate, loss=self._get_custom_loss())
         self.target_q_network.compile(self.learning_rate, loss=self._get_custom_loss())
 
@@ -207,16 +225,14 @@ class DQN:
 
         return max_sim
     
-    def _load_demonstrations(self, path: str):
+    def _load_demonstrations(self, path: str) -> List[TimeStep]:
         '''
-        Load demonstrations files and store them into a list of TimeStep.
-        Note that the focused player is set "player 1". You may need to change it depending on your recordings.
+        Load demonstration files and store them into a list of TimeStep.
         '''
         demonstrations = []
-        focused_player = 1
-        frames_key = 'frames'
-        state_key = f'p{focused_player}StateVector'
-        action_key = f'p{focused_player}ActionVector'
+        frames_key = 'observations'
+        state_key = 'stateTensor'
+        action_key = 'action'
 
         for file_name in glob.glob(os.path.join(path, '*.json')):
             file = open(file_name)
@@ -224,6 +240,9 @@ class DQN:
 
             state_size = len(demo_json[frames_key][0][state_key])
             action_size = len(demo_json[frames_key][0][action_key])
+            if self.action_histogram_in_demonstrations is None:
+                self.action_histogram_in_demonstrations = np.zeros(action_size)
+
             for i in range(len(demo_json[frames_key]) - 1):
                 # TODO: ignore unnecessary frames
                 current_frame = demo_json[frames_key][i]
@@ -234,5 +253,9 @@ class DQN:
                 d.next_state = np.asarray(next_frame[state_key])
                 d.next_action = np.asarray(next_frame[action_key])
                 demonstrations.append(d)
-        
+                self.action_histogram_in_demonstrations[d.action.argmax()] += 1
+
+        self.action_histogram_in_demonstrations /= np.linalg.norm(self.action_histogram_in_demonstrations)
+        print(self.action_histogram_in_demonstrations)
+
         return demonstrations
