@@ -71,6 +71,19 @@ class DQNTrainer:
             self._save_model()
             ftm.print()
 
+    def start_inference(self, model_path: str):
+        """
+        Do inference using the model.
+        Model file/folder must be of SavedModel format.
+        """
+        # load model and set the model to Q network
+        model = tf.keras.models.load_model(model_path, custom_objects={'loss': self.dqn._get_custom_loss()})
+        model.summary()
+        self.dqn.q_network.model = model
+
+        while True:
+            self._advance_inference()
+
     def _done_training(self) -> bool:
         return self.step > self.max_steps
 
@@ -169,6 +182,59 @@ class DQNTrainer:
             self._save_progress()
             self._save_model(dir=os.path.join(DQNProgress.dir, f"{datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')}_step={self.step}"))
 
+    def _advance_inference(self):
+        
+        # choose action 
+        if self.dqn.is_random():
+            action = self.dqn.get_random_action()
+        else:
+            action = self.dqn.get_action(self.prev_time_step.state)
+
+        # send action
+        action_array = np.empty(
+            (
+                1, # assume there's only one agent waiting
+                self.env.behavior_specs[self.behavior_name].action_spec.continuous_size
+            ),
+            dtype=np.float32
+        )
+        action_array[0] = action
+        if self.is_agent_waiting:
+            self.env.set_actions(behavior_name=self.behavior_name, action=ActionTuple(continuous=action_array))
+
+        # step env
+        self.env.step()
+        self.step += 1
+        print(self.step)
+        self.dqn.count_step()
+
+        # observe game state
+        (decision_steps, terminal_steps) = self.env.get_steps(behavior_name=self.behavior_name)
+
+        if len(decision_steps) == 1:
+            agent_id = decision_steps.agent_id[0]
+            self.prev_time_step.next_state = decision_steps[agent_id].obs[0]
+            self.prev_time_step.next_action = action
+            self.time_step.state = decision_steps[agent_id].obs[0]
+            self.time_step.action = action
+            self.time_step.reward = decision_steps[agent_id].reward
+            self.time_step.done = 0
+            
+            self.is_agent_waiting = True
+        
+        if len(terminal_steps) == 1:
+            agent_id = terminal_steps.agent_id[0]
+            self.prev_time_step.next_state = terminal_steps[agent_id].obs[0]
+            self.prev_time_step.next_action = action
+            self.time_step.state = terminal_steps[agent_id].obs[0]
+            self.time_step.action = action
+            self.time_step.reward = terminal_steps[agent_id].reward
+            self.time_step.done = 1
+
+            self.is_agent_waiting = False
+        
+        self.buffer.append(self.prev_time_step)
+        self.prev_time_step = copy(self.time_step)
 
     def _resume(self, progress_file_path):
         with open(progress_file_path, 'rb') as f:
@@ -211,11 +277,11 @@ def main():
     dqn = DQN(
         learning_rate=0.00025,
         hidden_layer_unit=34,
-        initial_epsilon=0.5,
-        final_epsilon=0.1,
-        epsilon_decay=1e-4,
+        initial_epsilon=0,
+        final_epsilon=0,
+        epsilon_decay=0,
         gamma=0.999,
-        start_steps=BUFFER_SIZE,
+        start_steps=0,
         update_interval=4,
         target_update_interval=10000,
         reward_shaping=True,
@@ -225,7 +291,8 @@ def main():
     trainer = DQNTrainer(env, dqn, stats_channel, MAX_STEPS, BATCH_SIZE, BUFFER_SIZE, save_progress_freq=BUFFER_SIZE)
 
     try:
-        trainer.start_learning()
+        # trainer.start_learning()
+        trainer.start_inference(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model', '2023-01-20_02-23-12-20230208T084533Z-001', '2023-01-20_02-23-12'))
     finally:
         env.close()
     
